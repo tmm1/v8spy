@@ -249,26 +249,26 @@ impl V8Spy {
         let version = get_v8_version(&process_info, &process);
         println!("v8 version: {}.{}.{}.{}", version.major, version.minor, version.build, version.patch);
 
-        let mut v8_data = get_v8_data(&process_info, &process);
-        println!("{:?}", v8_data);
+        let mut vms = get_v8_data(&process_info, &process);
+        println!("{:?}", vms);
 
         let ver = v8_ver(version.major, version.minor, version.build);
         let pointer_size = 8;
 
         // Add some defaults when needed
-        if v8_data.frame_pointer.bytecode_array == 0 {
+        if vms.frame_pointer.bytecode_array == 0 {
             // Not available before V8 9.5.2
             if ver >= v8_ver(8, 7, 198) {
-                v8_data.frame_pointer.bytecode_array = v8_data.frame_pointer.function - 2 * pointer_size;
+                vms.frame_pointer.bytecode_array = vms.frame_pointer.function - 2 * pointer_size;
             } else {
-                v8_data.frame_pointer.bytecode_array = v8_data.frame_pointer.function - 1 * pointer_size;
+                vms.frame_pointer.bytecode_array = vms.frame_pointer.function - 1 * pointer_size;
             }
         }
-        if v8_data.frame_pointer.bytecode_offset == 0 {
+        if vms.frame_pointer.bytecode_offset == 0 {
             // Not available before V8 9.5.2
-            v8_data.frame_pointer.bytecode_offset = v8_data.frame_pointer.bytecode_array - pointer_size;
+            vms.frame_pointer.bytecode_offset = vms.frame_pointer.bytecode_array - pointer_size;
         }
-        if v8_data.fixed.first_jsfunction_type == 0 {
+        if vms.fixed.first_jsfunction_type == 0 {
             // Since V8 9.0.14 the JSFunction is no longer a final class, but has several
             // classes inheriting form it. The only way to check for the inheritance is to
             // know which InstaceType tags belong to the range.
@@ -280,93 +280,93 @@ impl V8Spy {
                 // Several constructor special cases added
                 num_jsfunc_types = 14;
             }
-            v8_data.fixed.first_jsfunction_type = v8_data.typ.js_function;
-            v8_data.fixed.last_jsfunction_type = v8_data.fixed.first_jsfunction_type + num_jsfunc_types - 1;
+            vms.fixed.first_jsfunction_type = vms.typ.js_function;
+            vms.fixed.last_jsfunction_type = vms.fixed.first_jsfunction_type + num_jsfunc_types - 1;
         }
-        if v8_data.jsfunction.code == 0 {
+        if vms.jsfunction.code == 0 {
             if ver >= v8_ver(11, 7, 368) {
-                v8_data.jsfunction.code = v8_data.jsfunction.shared_function_info - pointer_size as u16;
+                vms.jsfunction.code = vms.jsfunction.shared_function_info - pointer_size as u16;
             } else {
                 // At least back to V8 8.4
-                v8_data.jsfunction.code = v8_data.jsfunction.shared_function_info + 3 * pointer_size as u16;
+                vms.jsfunction.code = vms.jsfunction.shared_function_info + 3 * pointer_size as u16;
             }
         }
-        if v8_data.code.instruction_size != 0 {
-            if v8_data.code.source_position_table == 0 {
+        if vms.code.instruction_size != 0 {
+            if vms.code.source_position_table == 0 {
                 // At least back to V8 8.4
-                v8_data.code.source_position_table = v8_data.code.instruction_size - 2 * pointer_size as u16;
+                vms.code.source_position_table = vms.code.instruction_size - 2 * pointer_size as u16;
             }
-            if v8_data.code.flags == 0 {
+            if vms.code.flags == 0 {
                 // Back to V8 8.8.172
-                v8_data.code.flags = v8_data.code.instruction_size + 2 * 4; // 2 * sizeof(int)
+                vms.code.flags = vms.code.instruction_size + 2 * 4; // 2 * sizeof(int)
             }
-        } else if v8_data.code.source_position_table != 0 {
+        } else if vms.code.source_position_table != 0 {
             // Likely V8 11.x where the Code postmortem data was accidentally deleted
-            if v8_data.code.deoptimization_data == 0 {
-                v8_data.code.deoptimization_data = v8_data.code.source_position_table - pointer_size as u16;
+            if vms.code.deoptimization_data == 0 {
+                vms.code.deoptimization_data = vms.code.source_position_table - pointer_size as u16;
             }
-            if v8_data.code.instruction_start == 0 {
-                v8_data.code.instruction_start = v8_data.code.source_position_table + 2 * pointer_size as u16;
+            if vms.code.instruction_start == 0 {
+                vms.code.instruction_start = vms.code.source_position_table + 2 * pointer_size as u16;
             }
-            if v8_data.code.flags == 0 {
-                v8_data.code.flags = v8_data.code.instruction_start + pointer_size as u16;
+            if vms.code.flags == 0 {
+                vms.code.flags = vms.code.instruction_start + pointer_size as u16;
             }
-            if v8_data.code.instruction_size == 0 {
-                v8_data.code.instruction_size = v8_data.code.flags + 4;
+            if vms.code.instruction_size == 0 {
+                vms.code.instruction_size = vms.code.flags + 4;
                 if ver >= v8_ver(11, 4, 59) {
                     // V8 starting 11.1.x Code has kBuiltinIdOffset and kKindSpecificFlagsOffset
                     // which changed again in 11.4.59 when these were removed in commit
                     // cb8be519f0add9b7 "[code] Merge kind_specific_flags with flags"
-                    v8_data.code.instruction_size += 2 + 2;
+                    vms.code.instruction_size += 2 + 2;
                 }
             }
         }
-        if v8_data.code.deoptimization_data == 0 && v8_data.code.source_position_table != 0 {
+        if vms.code.deoptimization_data == 0 && vms.code.source_position_table != 0 {
             // Used unconditionally, pending patch for V8 to export this
             // At least back to V8 7.2
-            v8_data.code.deoptimization_data = v8_data.code.source_position_table - pointer_size as u16;
+            vms.code.deoptimization_data = vms.code.source_position_table - pointer_size as u16;
         }
-        if v8_data.script.source == 0 {
+        if vms.script.source == 0 {
             // At least back to V8 8.4
-            v8_data.script.source = v8_data.script.name - pointer_size as u16;
+            vms.script.source = vms.script.name - pointer_size as u16;
         }
-        if v8_data.bytecode_array.source_position_table == 0 {
+        if vms.bytecode_array.source_position_table == 0 {
             // Lost in V8 9.4
-            v8_data.bytecode_array.source_position_table = v8_data.fixed_array_base.length + 3 * pointer_size as u16;
+            vms.bytecode_array.source_position_table = vms.fixed_array_base.length + 3 * pointer_size as u16;
         }
-        if v8_data.bytecode_array.data == 0 {
+        if vms.bytecode_array.data == 0 {
             // At least back to V8 8.4 (16 = 3*int32 + uint16)
-            v8_data.bytecode_array.data = v8_data.bytecode_array.source_position_table + pointer_size as u16 + 14;
+            vms.bytecode_array.data = vms.bytecode_array.source_position_table + pointer_size as u16 + 14;
         }
-        if v8_data.deoptimization_data_index.inlined_function_count == 0 {
-            v8_data.deoptimization_data_index.inlined_function_count = 1;
+        if vms.deoptimization_data_index.inlined_function_count == 0 {
+            vms.deoptimization_data_index.inlined_function_count = 1;
         }
-        if v8_data.deoptimization_data_index.literal_array == 0 {
-            let val = v8_data.deoptimization_data_index.inlined_function_count + 1;
-            v8_data.deoptimization_data_index.literal_array = val;
+        if vms.deoptimization_data_index.literal_array == 0 {
+            let val = vms.deoptimization_data_index.inlined_function_count + 1;
+            vms.deoptimization_data_index.literal_array = val;
         }
-        if v8_data.deoptimization_data_index.shared_function_info == 0 {
-            v8_data.deoptimization_data_index.shared_function_info = 6;
+        if vms.deoptimization_data_index.shared_function_info == 0 {
+            vms.deoptimization_data_index.shared_function_info = 6;
         }
-        if v8_data.deoptimization_data_index.inlining_positions == 0 {
-            let val = v8_data.deoptimization_data_index.shared_function_info + 1;
-            v8_data.deoptimization_data_index.inlining_positions = val;
+        if vms.deoptimization_data_index.inlining_positions == 0 {
+            let val = vms.deoptimization_data_index.shared_function_info + 1;
+            vms.deoptimization_data_index.inlining_positions = val;
         }
-        if v8_data.code_kind.baseline == 0 {
+        if vms.code_kind.baseline == 0 {
             if ver >= v8_ver(9, 0, 240) {
                 // Back to V8 9.0.240, and metadata available after that
-                v8_data.code_kind.field_mask = 0xf;
-                v8_data.code_kind.field_shift = 0;
-                v8_data.code_kind.baseline = 11;
+                vms.code_kind.field_mask = 0xf;
+                vms.code_kind.field_shift = 0;
+                vms.code_kind.baseline = 11;
             } else {
                 // Leave mask and shift to zero, and set baseline to something
                 // so that the Baseline code is never triggered.
-                v8_data.code_kind.baseline = 0xff;
+                vms.code_kind.baseline = 0xff;
             }
         }
-        if v8_data.baseline_data.data == 0 && v8_data.code_kind.field_mask != 0 {
+        if vms.baseline_data.data == 0 && vms.code_kind.field_mask != 0 {
             // Unfortunately no metadata currently. Has been static.
-            v8_data.baseline_data.data = v8_data.heap_object.map + 2 * pointer_size as u16;
+            vms.baseline_data.data = vms.heap_object.map + 2 * pointer_size as u16;
         }
 
         Ok(Self { pid, process, version })
@@ -432,7 +432,7 @@ fn get_v8_data(process_info: &ProcessInfo, process: &Process) -> VMData {
     read_memory(process_info, process, "v8dbg_frametype_WasmExitFrame", &mut data.frame_type.wasm_exit_frame);
     read_memory(process_info, process, "v8dbg_frametype_WasmInterpreterEntryFrame", &mut data.frame_type.wasm_interpreter_entry_frame);
     read_memory(process_info, process, "v8dbg_frametype_WasmToJsFrame", &mut data.frame_type.wasm_to_js_frame);
-    read_memory(process_info, process, "v8dbg_type_BaselineData__BASELINE_DATA_TYPE", &mut data.baseline_data.data);
+    read_memory(process_info, process, "v8dbg_type_BaselineData__BASELINE_DATA_TYPE", &mut data.typ.baseline_data);
     read_memory(process_info, process, "v8dbg_type_ByteArray__BYTE_ARRAY_TYPE", &mut data.typ.byte_array);
     read_memory(process_info, process, "v8dbg_type_BytecodeArray__BYTECODE_ARRAY_TYPE", &mut data.typ.bytecode_array);
     read_memory(process_info, process, "v8dbg_type_Code__CODE_TYPE", &mut data.typ.code);
