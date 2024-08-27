@@ -1,0 +1,14 @@
+[package]
+name = "v8spy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+spytools = { path = "../spytools" }
+remoteprocess = {version="0.4.12", features=["unwind"]}
+log = "0.4"
+
+[[bin]]
+name = "v8spy"
+path = "src/main.rs"
