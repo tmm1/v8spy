@@ -249,11 +249,132 @@ impl V8Spy {
         let version = get_v8_version(&process_info, &process);
         println!("v8 version: {}.{}.{}.{}", version.major, version.minor, version.build, version.patch);
 
-        let v8_data = get_v8_data(&process_info, &process);
+        let mut v8_data = get_v8_data(&process_info, &process);
         println!("{:?}", v8_data);
+
+        let ver = v8_ver(version.major, version.minor, version.build);
+        let pointer_size = 8;
+
+        // Add some defaults when needed
+        if v8_data.frame_pointer.bytecode_array == 0 {
+            // Not available before V8 9.5.2
+            if ver >= v8_ver(8, 7, 198) {
+                v8_data.frame_pointer.bytecode_array = v8_data.frame_pointer.function - 2 * pointer_size;
+            } else {
+                v8_data.frame_pointer.bytecode_array = v8_data.frame_pointer.function - 1 * pointer_size;
+            }
+        }
+        if v8_data.frame_pointer.bytecode_offset == 0 {
+            // Not available before V8 9.5.2
+            v8_data.frame_pointer.bytecode_offset = v8_data.frame_pointer.bytecode_array - pointer_size;
+        }
+        if v8_data.fixed.first_jsfunction_type == 0 {
+            // Since V8 9.0.14 the JSFunction is no longer a final class, but has several
+            // classes inheriting form it. The only way to check for the inheritance is to
+            // know which InstaceType tags belong to the range.
+            let mut num_jsfunc_types = 1u16;
+            if ver >= v8_ver(9, 6, 138) {
+                // Class constructor special case
+                num_jsfunc_types = 15;
+            } else if ver >= v8_ver(9, 0, 14) {
+                // Several constructor special cases added
+                num_jsfunc_types = 14;
+            }
+            v8_data.fixed.first_jsfunction_type = v8_data.typ.js_function;
+            v8_data.fixed.last_jsfunction_type = v8_data.fixed.first_jsfunction_type + num_jsfunc_types - 1;
+        }
+        if v8_data.jsfunction.code == 0 {
+            if ver >= v8_ver(11, 7, 368) {
+                v8_data.jsfunction.code = v8_data.jsfunction.shared_function_info - pointer_size as u16;
+            } else {
+                // At least back to V8 8.4
+                v8_data.jsfunction.code = v8_data.jsfunction.shared_function_info + 3 * pointer_size as u16;
+            }
+        }
+        if v8_data.code.instruction_size != 0 {
+            if v8_data.code.source_position_table == 0 {
+                // At least back to V8 8.4
+                v8_data.code.source_position_table = v8_data.code.instruction_size - 2 * pointer_size as u16;
+            }
+            if v8_data.code.flags == 0 {
+                // Back to V8 8.8.172
+                v8_data.code.flags = v8_data.code.instruction_size + 2 * 4; // 2 * sizeof(int)
+            }
+        } else if v8_data.code.source_position_table != 0 {
+            // Likely V8 11.x where the Code postmortem data was accidentally deleted
+            if v8_data.code.deoptimization_data == 0 {
+                v8_data.code.deoptimization_data = v8_data.code.source_position_table - pointer_size as u16;
+            }
+            if v8_data.code.instruction_start == 0 {
+                v8_data.code.instruction_start = v8_data.code.source_position_table + 2 * pointer_size as u16;
+            }
+            if v8_data.code.flags == 0 {
+                v8_data.code.flags = v8_data.code.instruction_start + pointer_size as u16;
+            }
+            if v8_data.code.instruction_size == 0 {
+                v8_data.code.instruction_size = v8_data.code.flags + 4;
+                if ver >= v8_ver(11, 4, 59) {
+                    // V8 starting 11.1.x Code has kBuiltinIdOffset and kKindSpecificFlagsOffset
+                    // which changed again in 11.4.59 when these were removed in commit
+                    // cb8be519f0add9b7 "[code] Merge kind_specific_flags with flags"
+                    v8_data.code.instruction_size += 2 + 2;
+                }
+            }
+        }
+        if v8_data.code.deoptimization_data == 0 && v8_data.code.source_position_table != 0 {
+            // Used unconditionally, pending patch for V8 to export this
+            // At least back to V8 7.2
+            v8_data.code.deoptimization_data = v8_data.code.source_position_table - pointer_size as u16;
+        }
+        if v8_data.script.source == 0 {
+            // At least back to V8 8.4
+            v8_data.script.source = v8_data.script.name - pointer_size as u16;
+        }
+        if v8_data.bytecode_array.source_position_table == 0 {
+            // Lost in V8 9.4
+            v8_data.bytecode_array.source_position_table = v8_data.fixed_array_base.length + 3 * pointer_size as u16;
+        }
+        if v8_data.bytecode_array.data == 0 {
+            // At least back to V8 8.4 (16 = 3*int32 + uint16)
+            v8_data.bytecode_array.data = v8_data.bytecode_array.source_position_table + pointer_size as u16 + 14;
+        }
+        if v8_data.deoptimization_data_index.inlined_function_count == 0 {
+            v8_data.deoptimization_data_index.inlined_function_count = 1;
+        }
+        if v8_data.deoptimization_data_index.literal_array == 0 {
+            let val = v8_data.deoptimization_data_index.inlined_function_count + 1;
+            v8_data.deoptimization_data_index.literal_array = val;
+        }
+        if v8_data.deoptimization_data_index.shared_function_info == 0 {
+            v8_data.deoptimization_data_index.shared_function_info = 6;
+        }
+        if v8_data.deoptimization_data_index.inlining_positions == 0 {
+            let val = v8_data.deoptimization_data_index.shared_function_info + 1;
+            v8_data.deoptimization_data_index.inlining_positions = val;
+        }
+        if v8_data.code_kind.baseline == 0 {
+            if ver >= v8_ver(9, 0, 240) {
+                // Back to V8 9.0.240, and metadata available after that
+                v8_data.code_kind.field_mask = 0xf;
+                v8_data.code_kind.field_shift = 0;
+                v8_data.code_kind.baseline = 11;
+            } else {
+                // Leave mask and shift to zero, and set baseline to something
+                // so that the Baseline code is never triggered.
+                v8_data.code_kind.baseline = 0xff;
+            }
+        }
+        if v8_data.baseline_data.data == 0 && v8_data.code_kind.field_mask != 0 {
+            // Unfortunately no metadata currently. Has been static.
+            v8_data.baseline_data.data = v8_data.heap_object.map + 2 * pointer_size as u16;
+        }
 
         Ok(Self { pid, process, version })
     }
+}
+
+fn v8_ver(major: u32, minor: u32, build: u32) -> u32 {
+    (major << 24) + (minor << 16) + build
 }
 
 fn get_v8_data(process_info: &ProcessInfo, process: &Process) -> VMData {
@@ -332,14 +453,62 @@ fn get_v8_data(process_info: &ProcessInfo, process: &Process) -> VMData {
     read_memory(process_info, process, "v8dbg_class_ConsString__first__String", &mut data.cons_string.first);
     read_memory(process_info, process, "v8dbg_class_ConsString__second__String", &mut data.cons_string.second);
     read_memory(process_info, process, "v8dbg_class_ThinString__actual__String", &mut data.thin_string.actual);
+    if !read_memory(process_info, process, "v8dbg_class_JSFunction__code__Code", &mut data.jsfunction.code) {
+        read_memory(process_info, process, "v8dbg_class_JSFunction__code__Tagged_Code_", &mut data.jsfunction.code);
+    }
+    read_memory(process_info, process, "v8dbg_class_JSFunction__shared__SharedFunctionInfo", &mut data.jsfunction.shared_function_info);
+    if !read_memory(process_info, process, "v8dbg_class_Code__deoptimization_data__FixedArray", &mut data.code.deoptimization_data) {
+        read_memory(process_info, process, "v8dbg_class_Code__deoptimization_data__Tagged_FixedArray_", &mut data.code.deoptimization_data);
+    }
+    if !read_memory(process_info, process, "v8dbg_class_Code__source_position_table__ByteArray", &mut data.code.source_position_table) {
+        read_memory(process_info, process, "v8dbg_class_Code__source_position_table__Tagged_ByteArray_", &mut data.code.source_position_table);
+    }
+    if !read_memory(process_info, process, "v8dbg_class_Code__instruction_start__uintptr_t", &mut data.code.instruction_start) {
+        read_memory(process_info, process, "v8dbg_class_Code__instruction_start__Address", &mut data.code.instruction_start);
+    }
+    read_memory(process_info, process, "v8dbg_class_Code__instruction_size__int", &mut data.code.instruction_size);
+    read_memory(process_info, process, "v8dbg_class_Code__flags__uint32_t", &mut data.code.flags);
+    if !read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__name_or_scope_info__Object", &mut data.shared_function_info.name_or_scope_info) {
+        read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__name_or_scope_info__Tagged_Object_", &mut data.shared_function_info.name_or_scope_info);
+    }
+    if !read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__function_data__Object", &mut data.shared_function_info.function_data) {
+        read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__function_data__Tagged_Object_", &mut data.shared_function_info.function_data);
+    }
+    if !read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__script_or_debug_info__Object", &mut data.shared_function_info.script_or_debug_info) {
+        if !read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__script_or_debug_info__HeapObject", &mut data.shared_function_info.script_or_debug_info) {
+            read_memory(process_info, process, "v8dbg_class_SharedFunctionInfo__script_or_debug_info__Tagged_HeapObject_", &mut data.shared_function_info.script_or_debug_info);
+        }
+    }
+    read_memory(process_info, process, "v8dbg_class_BaselineData__data__Object", &mut data.baseline_data.data);
+    if !read_memory(process_info, process, "v8dbg_class_BytecodeArray__source_position_table__Object", &mut data.bytecode_array.source_position_table) {
+        read_memory(process_info, process, "v8dbg_class_BytecodeArray__source_position_table__Tagged_HeapObject_", &mut data.bytecode_array.source_position_table);
+    }
+    read_memory(process_info, process, "v8dbg_class_BytecodeArray__data__uintptr_t", &mut data.bytecode_array.data);
+    if process_info.get_symbol("v8dbg_parent_ScopeInfo__HeapObject").is_some() {
+        data.scope_info.heap_object = true;
+    }
+    if process_info.get_symbol("v8dbg_parent_DeoptimizationLiteralArray__WeakFixedArray").is_some() {
+        data.deoptimization_literal_array.weak_fixed_array = true;
+    }
+    read_memory(process_info, process, "v8dbg_class_Script__name__Object", &mut data.script.name);
+    read_memory(process_info, process, "v8dbg_class_Script__line_ends__Object", &mut data.script.line_ends);
+    read_memory(process_info, process, "v8dbg_class_Script__source__Object", &mut data.script.source);
     return data;
 }
 
-fn read_memory<T>(process_info: &ProcessInfo, process: &Process, symbol: &str, data: &mut T) {
+fn read_memory<T>(process_info: &ProcessInfo, process: &Process, symbol: &str, data: &mut T) -> bool {
     let addr = process_info.get_symbol(symbol);
     if addr.is_none() {
+        if symbol.starts_with("v8dbg_frametype_") {
+            unsafe {
+                if let Some(data_ptr) = (data as *mut T).cast::<u8>().as_mut() {
+                    *data_ptr = 0b11111111u8;
+                    return true;
+                }
+            }
+        }
         println!("Failed to get symbol {}", symbol);
-        return;
+        return false;
     }
     let addr = addr.unwrap();
 
@@ -357,9 +526,9 @@ fn read_memory<T>(process_info: &ProcessInfo, process: &Process, symbol: &str, d
             let data_ptr: *mut T = data as *mut T;
             std::ptr::copy_nonoverlapping(buf.as_ptr(), data_ptr as *mut u8, size);
         }
-        return;
+        return true;
     }
-    panic!("Failed to read memory for symbol {}", symbol);
+    return false;
 }
 
 fn get_v8_version(process_info: &ProcessInfo, process: &Process) -> Version {
